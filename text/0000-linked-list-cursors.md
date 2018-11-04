@@ -40,7 +40,7 @@ implementation.
 [guide-level-explanation]: #guide-level-explanation
 
 The cursor interface would provides two new types: `Cursor` and `CursorMut`.
-These are created in the same way as iterators.
+These are created in a similar way as iterators.
 
 With a `Cursor` one can seek back and forth through a list and get the current
 element. With a `CursorMut` One can seek back and forth and get mutable
@@ -61,21 +61,25 @@ list many times. With the cursor interface, one can do the following:
 
 ``` rust
 fn remove_replace<T, P, F>(list: &mut LinkedList<T>, p: P, f: F)
-	where P: Fn(&T) -> bool, F: Fn(T) -> T
+where
+    P: Fn(&T) -> bool,
+    F: Fn(T) -> T,
 {
-	let mut cursor = list.cursor_mut();
-	// move to the first element, if it exists
-	loop {
-		let should_replace = match cursor.peek() {
-			Some(element) => p(element),
-			None => break,
-		};
-		if should_replace {
-			let old_element = cursor.pop().unwrap();
-			cursor.insert(f(old_element));
-		} 
-		cursor.move_next();
-	}
+    use list_cursors::StartPosition::BeforeHead;
+
+    let mut cursor = list.cursor_mut(BeforeHead);
+    // move to the first element, if it exists
+    loop {
+        let should_replace = match cursor.peek_after() {
+            Some(element) => p(element),
+            None => break,
+        };
+        if should_replace {
+            let old_element = cursor.pop_after().unwrap();
+            cursor.insert_after(f(old_element));
+        }
+        cursor.move_next();
+    }
 }
 ```
 
@@ -84,33 +88,62 @@ iterator, perform operations on it and collect. This is easier, however it still
 requires much needless allocation.
 
 For another example, consider code that was previously using `IterMut`
-extensions. 
+extensions.
 ``` rust
 fn main() {
 	let mut list: LinkedList<_> = (0..10).collect();
-	let mut iter = list.iter_mut();
-	while let Some(x) = iter.next() {
-		if x >= 5 {
-			break;
+	{
+		let mut iter = list.iter_mut();
+		while let Some(x) = iter.next() {
+			if *x >= 5 {
+				break;
+			}
 		}
+		iter.insert_next(12);
 	}
-	iter.insert_next(12);
+	println!("{:?}", list);
+	// [0, 1, 2, 3, 4, 5, 12, 6, 7, 8, 9]
 }
 ```
 This can be changed almost verbatim to `CursorMut`:
 ``` rust
 fn main() {
+	use list_cursors::StartPosition::BeforeHead;
 	let mut list: LinkedList<_> = (0..10).collect();
-	let mut cursor = list.cursor_mut() {
-	while let Some(x) = cursor.peek_next() {
-		if x >= 5 {
-			break;
+	{
+		let mut cursor = list.cursor_mut(BeforeHead);
+		while let Some(x) = cursor.next() {
+			if *x >= 5 {
+				break;
+			}
 		}
-		cursor.move_next();
+		cursor.insert_before(12);
 	}
-	cursor.insert(12);
+	println!("{:?}", list);
+	// [0, 1, 2, 3, 4, 5, 12, 6, 7, 8, 9]
 }
 ```
+
+Contrary to the `IterMut` interface the algorithm can be easily inverted
+by simply replacing `next` with `prev`, `*_before` with `*_after`, and `>=` by `<=`:
+``` rust
+fn main() {
+	use list_cursors::StartPosition::AfterTail;
+	let mut list: LinkedList<_> = (0..10).collect();
+	{
+		let mut cursor = list.cursor_mut(AfterTail);
+		while let Some(x) = cursor.prev() {
+			if *x <= 3 {
+				break;
+			}
+		}
+		cursor.insert_after(12);
+	}
+	println!("{:?}", list);
+	// [0, 1, 2, 12, 3, 4, 5, 6, 7, 8, 9]
+}
+```
+
 In general, the cursor interface is not the easiest way to do something.
 However, it provides a basic API that can be built on to perform more
 complicated tasks.
@@ -118,88 +151,191 @@ complicated tasks.
 # Reference-level explanation
 [reference-level-explanation]: #reference-level-explanation
 
-One gets a cursor the exact same way as one would get an iterator. The
-returned cursor would point to the "empty" element, i.e. if you got an element
-and called `current` you would receive `None`.
-``` rust
-// Provides a cursor to the first element of the list
-pub fn cursor(&self) -> Cursor<T>;
+A cursor is created by using one of the following methods of list. For
+the raw `cursor`/`cursor_mut` methods the returned cursor would point to
+an "empty" element as requested by the position argument:
 
-/// Provides a cursor with mutable references and access to the list
-pub fn cursor_mut(&mut self) -> CursorMut<T>;
+``` rust
+pub enum StartPosition {
+    BeforeHead,
+    AfterTail,
+}
+```
+Calling `current()` on a cursor in this state would return `None`. The ability
+to start form an empty element is nessesary, because a cursor will never pop
+the element it is pointing to - therefore to drain the list from either end
+it is nessesary to start with an empty element.
+
+The `head()`/`head_mut()`, and `tail()`/`tail_mut()` methods serve as a
+convenience methods that attempt to start the iteration from a non-empty
+element. This mehods ensure that starting at either end of the
+list keeps the cursor at this end or the following/preceding empty element.
+For example, the `head*()` and `tail*()` of an empty list are the empty
+elements before and after the list. For an one element list both metohds
+point to this element. This behavior also ensures that inserting before
+head and after tail has the expected semantincs for the movement of the cursor.
+
+``` rust
+/// Provides a cursor with immutable references to elements in the list.
+/// The cursor starts ether with an empty element before the head or after the tail
+/// as specified by  the `position` argument.
+pub fn cursor(&self, position: StartPosition) -> Cursor<T> {...}
+
+/// Provides a cursor with immutable references to elements in the list starting with
+/// head of the list, i.e. the first valid element or the empty element before the head.
+pub fn head(&self) -> Cursor<T> {...}
+
+/// Provides a cursor with immutable references to elements in the list starting with
+/// tail of the list, i.e. the last valid element or the empty element after the tail.
+pub fn tail(&self) -> Cursor<T> {...}
+
+/// Provides a cursor with mutable references to elements and mutable access to the list.
+/// The cursor starts ether with an empty element before the head or after the tail
+/// as specified by  the `position` argument.
+pub fn cursor_mut(&mut self, position: StartPosition) -> CursorMut<T> {...}
+
+/// Provides a cursor with mutable references to elements and mutable access to the list
+/// starting with head of the list, i.e. the first valid element or the empty element
+/// before the head.
+pub fn head_mut(&mut self) -> CursorMut<T> {...}
+
+/// Provides a cursor with mutable references to elements and mutable access to the list
+/// starting with tail of the list, i.e. the last valid element or the empty element
+/// after the tail.
+pub fn tail_mut(&mut self) -> CursorMut<T> {...}
+
 ```
 
-These would provide the following interface:
+The `Cursor` would provide the following interface:
 
 ``` rust
 impl<'list, T> Cursor<'list, T> {
-	/// Move to the subsequent element of the list if it exists or the empty
-	/// element
-	pub fn move_next(&mut self);
-	/// Move to the previous element of the list
-	pub fn move_prev(&mut self);
-	
-	/// Get the current element
-	pub fn current(&self) -> Option<&'list T>;
-	/// Get the following element
-	pub fn peek(&self) -> Option<&'list T>;
-	/// Get the previous element
-	pub fn peek_before(&self) -> Option<&'list T>;
+    /// Return cursor position where `None` is the empty element before the head,
+    /// `Some(0)..Some(list.len())` are valid element positions and `Some(list.len())`
+    /// is the empty element after the tail.
+    pub fn pos(&self) -> Option<usize> {...}
+
+    /// Move to the subsequent element of the list if it exists or the empty
+    /// element after the tail. Returns the element the cursor pointed to last.
+    pub fn next(&mut self) -> Option<&'list T> {...}
+
+    /// Move to the previous element of the list if it exists or the empty
+    /// element before the head. Returns the element the cursor pointed to last.
+    pub fn prev(&mut self) -> Option<&'list T> {...}
+
+    /// Move to the subsequent element of the list if it exists or the empty
+    /// element after the tail.
+    pub fn move_next(&mut self) {...}
+
+    /// Move to the previous element of the list if it exists or the empty
+    /// element before the head.
+    pub fn move_prev(&mut self) {...}
+
+    /// Get the current element
+    pub fn current(&self) -> Option<&'list T> {...}
+
+    /// Get the following element
+    pub fn peek_after(&self) -> Option<&'list T> {...}
+
+    /// Get the previous element
+    pub fn peek_before(&self) -> Option<&'list T> {...}
 }
+
+```
+The `CursorMut` would provide the following interface:
+
+```rust
 
 impl<'list T> CursorMut<'list, T> {
-	/// Move to the subsequent element of the list if it exists or the empty
-	/// element
-	pub fn move_next(&mut self);
-	/// Move to the previous element of the list
-	pub fn move_prev(&mut self);
+    /// Return cursor position where `None` is the empty element before the head,
+    /// `Some(0)..Some(list.len())` are valid element positions and `Some(list.len())`
+    /// is the empty element after the tail.
+    pub fn pos(&self) -> Option<usize> {...}
 
-	/// Get the current element
-	pub fn current(&mut self) -> Option<&mut T>;
-	/// Get the next element
-	pub fn peek(&mut self) -> Option<&mut T>;
-	/// Get the previous element
-	pub fn peek_before(&mut self) -> Option<&mut T>;
+    /// Move to the subsequent element of the list if it exists or the empty
+    /// element after the tail. Returns the element the cursor pointed to last.
+    pub fn next(&mut self) -> Option<&mut T> {...}
 
-	/// Get an immutable cursor at the current element
-	pub fn as_cursor<'cm>(&'cm self) -> Cursor<'cm, T>;
+    /// Move to the previous element of the list if it exists or the empty
+    /// element before the head. Returns the element the cursor pointed to last.
+    pub fn prev(&mut self) -> Option<&mut T> {...}
 
-	// Now the list editing operations
+    /// Move to the subsequent element of the list if it exists or the empty
+    /// element after the tail.
+    pub fn move_next(&mut self) {...}
 
-	/// Insert `item` after the cursor
-	pub fn insert(&mut self, item: T);
-	/// Insert `item` before the cursor
-	pub fn insert_before(&mut self, item: T);
+    /// Move to the previous element of the list if it exists or the empty
+    /// element before the head.
+    pub fn move_prev(&mut self) {...}
 
-	/// Remove and return the item following the cursor
-	pub fn pop(&mut self) -> Option<T>;
-	/// Remove and return the item before the cursor
-	pub fn pop_before(&mut self) -> Option<T>;
+    /// Get the current element
+    pub fn current(&mut self) -> Option<&mut T> {...}
 
-	/// Insert `list` between the current element and the next
-	pub fn insert_list(&mut self, list: LinkedList<T>);
-	/// Insert `list` between the previous element and current
-	pub fn insert_list_before(&mut self, list: LinkedList<T>);
+    /// Get the next element
+    pub fn peek_after(&mut self) -> Option<&mut T> {...}
 
-	/// Split the list in two after the current element
-	/// The returned list consists of all elements following the current one.
-	// note: consuming the cursor is not necessary here, but it makes sense
-	// given the interface
-	pub fn split(self) -> LinkedList<T>;
-	/// Split the list in two before the current element
-	pub fn split_before(self) -> LinkedList<T>;
+    /// Get the previous element
+    pub fn peek_before(&self) -> Option<&mut T> {...}
+
+    /// Get an immutable cursor at the current element
+    pub fn as_cursor(&self) -> Cursor<T> {...}
+
+    /// Insert `element` after the cursor
+    ///
+    /// This function will move the cursor so `peek_after` will point to the new element.
+    pub fn insert_after(&mut self, element: T) {...}
+
+    /// Insert `element` before the cursor
+    ///
+    /// This function will move the cursor so `peek_before` will point to the new element.
+    pub fn insert_before(&mut self, element: T) {...}
+
+    /// Insert `list` between the current element and the next
+    ///
+    /// This function will move the cursor so `peek_after` will point to the head
+	///  of the inserted `list`.
+    pub fn insert_list_after(&mut self, mut list: LinkedList<T>) {...}
+
+    /// Insert `list` between the previous element and current
+    ///
+    /// This function will move the cursor so `peek_before` will point to the tail
+	/// of the inserted `list`.
+    pub fn insert_list_before(&mut self, mut list: LinkedList<T>) {...}
+
+    /// Remove and return the element following the cursor
+    ///
+    /// This function will not consume the element pointed to by the cursor. If you
+    /// want to drain the list you should start with an empty element.
+    pub fn pop_after(&mut self) -> Option<T> {...}
+
+    /// Remove and return the element before the cursor
+    ///
+    /// This function will not consume the element pointed to by the cursor. If you
+    /// want to drain the list you should start with an empty element.
+    pub fn pop_before(&mut self) -> Option<T> {...}
+
+    /// Split the list in two after the current element
+    /// The returned list consists of all elements following but **not including**
+    /// the current one.
+    pub fn split_after(self) -> LinkedList<T> {...}
+
+    /// Split the list in two before the current element
+    /// The returned list consists of all elements following and **including**
+    /// the current one.
+    pub fn split_before(self) -> LinkedList<T> {...}
 }
+
 ```
 One should closely consider the lifetimes in this interface. Both `Cursor` and
 `CursorMut` operate on data in their `LinkedList`. This is why, they both hold
 the annotation of `'list`.
 
 The lifetime elision for their constructors is correct as
-```
+```rust
 pub fn cursor(&self) -> Cursor<T>
 ```
 becomes
-```
+```rust
 pub fn cursor<'list>(&'list self) -> Cursor<'list, T>
 ```
 which is what we would expect. (the same goes for `CursorMut`).
@@ -215,11 +351,21 @@ possible to achieve a mutable and immutable reference to the same element at
 once.
 
 One question that arises from this interface is what happens if `move_next` is
-called when a cursor is on the last element of the list, or is empty (or
-`move_prev` and the beginning). A simple way to solve this is to make cursors
-wrap around this list back to the empty element. One could complicate the
-interface by having move return a `bool`, however this is unnecessary since
-`current` is sufficient to know whether the iterator is at the end of the list.
+called when a cursor is on the last element of the list, or the list is empty (or
+`move_prev` and the beginning). The proposed solution is to effectively
+have an empty element on each end of the list that corresponds to one of the
+`StartPosition` variants. Moving next to the `AfterEnd` is a no-op as is the
+moving previous to `BeforeEnd`. Moving to the opposite direction yields
+the first nonempty element or the opposite empty element. Internally the state
+is recorded in a `Position` enum, that admits only these valid states.
+
+```rust
+enum Position<T> {
+    BeforeHead,
+    Node(usize, NonNull<Node<T>>),
+    AfterTail,
+}
+```
 
 A large consequence of this new interface is that it is a complete superset of
 the already existing `Iter` and `IterMut` API. Therefore, the following two
